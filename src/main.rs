@@ -5,25 +5,69 @@ use std::io::{BufReader, Read};
 mod conf;
 use conf::Conf;
 mod zulip_request;
-use zulip_request::{Narrow, MsgRequest};
+use zulip_request::{MsgRequest};
 use std::collections::HashMap;
 use dotenv::dotenv;
 use std::env;
 use std::fs;
 use std::fmt;
+use regex::Regex;
+use select::{predicate::Name, document::Document};
+
 
 mod db;
 use db::{DB};
+
+/*
+TODO:
+[ ] create a hashtable for stream:streamid
+[ ] how are we going to cull?  More importantly, *when* are we going to cull?
+*/
+
+
+/*
+CULLING RULES
+get rid of it:
+- duplicates
+- zulipchat.com
+- 404
+- twitter / fb
+- bitbucket / gist ??
+- repl.it
+ */
+
+/*
+Tagging and scoring:
+What are the ways in which we can enrich the data in-place?
+- can we identify a blog post?
+- how do we identify beginner resources?
+- is alexa rank useful here?
+*/
+
+/*
+Procedural processing
+
+We need to cull, sort, tag, and do various other things to the links gathered.  The order of operations is important.
+
+1. Pull links
+ - we're already doing this.  One of the things we must figure out is what to do with multiple-link posts.
+2. Cull 'cheap' rules
+ - some rules are easier / cheaper to check against.  An example of an 'expensive' rule is 404 - which is going to require a request to be checked. (the same goes for other reponse-code based rules, like 504)
+
+What we probably want to do, is to have <Link> objects populate with a pointer to the message (messageid would work fine.)  then cull the links, then use the messageid to populate the link.
+
+*/
+
 
 fn init() {
     // perform app initialization business
     println!("Initializing Zcrape scraper...");
     dotenv().ok();
-    println!("dotenv loaded.\n\nenv contains:\n====================\n");
-    for (k, v) in env::vars() {
-	println!("{} : {}", k, v);
-    }
-    println!("\n\n");
+    // println!("dotenv loaded.\n\nenv contains:\n====================\n");
+    // for (k, v) in env::vars() {
+    // 	println!("{} : {}", k, v);
+    // }
+    // println!("\n\n");
 }
 
 
@@ -33,13 +77,71 @@ fn main() {
     for file in &pattern[1..] {
 	let foo: String = fs::read_to_string(file).expect("light it up!");
 	let buf = MessageBuffer::from_json_string((&foo).to_string());
-	for message in buf.messages {
-	    println!("===============\n{:?}", message);
+	let re = Regex::new("<a[^>]+href=\"(?P<link>.*)\"[^>]*>(.*?)</a>").unwrap();
+	for cap in re.captures_iter(r"<a>http://www.linktest.com/</a>") {
+	    println!("REGEX TEST:  {:?}", cap);
 	}
+
+	let mut linkbuffer: Vec<Link> = Vec::new();
+	let mut numlinks = 0;
+	let mut nummsg = 0;
+	for message in buf.messages {
+	    nummsg = nummsg + 1;
+
+	    let mut links :Vec<String> = Vec::new();
+
+	    Document::from(message.content.as_str())
+		.find(Name("a"))
+		.filter_map(|n| n.attr("href"))
+		.for_each(|x| links.push(String::from(x)));
+
+	    for link in links {
+		for ol in &linkbuffer {
+		    if ol.message_id == message.id as u32 {
+			println!("dupe found in {}\n\n", message.content);
+		    }
+		}
+		numlinks = numlinks + 1;
+		linkbuffer.push(Link::from_message(&message, link));
+	    }
+
+	}
+	let mut multilink = 0;
+	for link in &linkbuffer {
+	    println!("Found link:\nurl:{}\nmsgid:{}\n", link.url, link.message_id);
+	    for otherlink in &linkbuffer {
+		if link.message_id == otherlink.message_id {
+		    multilink = multilink + 1;
+		}
+	    }
+	}
+	println!("found {} links in {} messages in {}", numlinks, nummsg, file);
+	println!("{} instances of multiple-link messages.", multilink - numlinks);
     }
 
     init();
 
+}
+
+// This is the format we eventually want Links to live in.
+struct Link {
+    url: String,
+    stream_id: u32,
+    relevance_score: u32, 	// how are we going to calculate this?
+    tags: Vec<String>,
+    message_id: u32,
+}
+
+impl Link {
+    fn from_message(msg: &Message, link: String) -> Link {
+	Link {
+	    url: link,
+	    stream_id: msg.stream_id as u32,
+	    relevance_score: msg.calculate_score(), 	// how are we going to calculate this?
+	    tags: msg.extract_tags() ,
+	    message_id: msg.id as u32,
+	}   
+    }
 }
 
 fn pull_messages() -> String {
@@ -63,6 +165,7 @@ struct MsgPuller {
     window_size: u32,
 }
 
+// Vestigal. Currently made unnecessary by scrape.sh
 impl MsgPuller {
     // create new puller, starting at anchor 0
     fn new(stream_id: u32, window_size: u32) -> MsgPuller {
@@ -87,54 +190,6 @@ impl MsgPuller {
 	// TODO: log
     }
 
-    // do I want this to return the data or to manage it completely?
-    // fn pull(&mut self) -> Result<String> {
-    // 	// prep curl request
-    // 	let mut req = MsgRequest::new(
-    // 	    self.bookmark.into(),
-    // 	    1,
-    // 	    self.window_size.into(),
-    // 	    env::var("ZAPI_EMAIL").expect("no api email in env"),
-    // 	    env::var("ZAPI_PASS").expect("no api pass in env"));
-    // 	req.narrow("link".to_string(), "has".to_string());
-    // 	req.narrow(self.stream_id.to_string(), "stream".to_string());
-
-    // 	let results = req.curl();
-
-    // 	match results {
-    // 	    Ok(data) => {
-    // 		// save data to disk (how / where does this happen?)
-    // 	    	// update bookmark
-    // 		// save object state (bookmark)
-    // 		// return okay signal
-    // 	    }
-    // 	    Err(error) => {
-    // 		// retry
-    // 		// log
-    // 	    }
-    // 	}
-	
-	
-
-	// let results: String;
-	// let attempts = 0;
-	// while attempts < 10 {
-	//     results = match req.curl() {
-	// 	Ok(data) => {
-	// 	    self.save();
-	// 	    data
-	// 	},
-	// 	Err(error) => String::from("curl failed"),
-	//     };
-	// }
-
-	
-	// this should manage the thread that pulls messages
-	// this should:
-	// 1. Keep track of our place (in terms of messageid) + a list of all pulled messageids
-	// 2. Use that bookmark to run the next query
-	// 3. Ensure that messages were pulled correctly
-	// 4. Halt on error, send a C&C signal (with forensics), and await further orders
     
 }
 
@@ -346,8 +401,12 @@ impl Message {
 	)
     }
 
-    // filter messages out by criteria.
-    fn filter(&self) {
-	
+    fn calculate_score(&self) -> u32 {
+	3
     }
+    
+    fn extract_tags(&self) -> Vec<String> {
+	vec!(String::from(""))
+    }
+    
 }
