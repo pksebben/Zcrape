@@ -63,65 +63,152 @@ fn init() {
     // perform app initialization business
     println!("Initializing Zcrape scraper...");
     dotenv().ok();
-    // println!("dotenv loaded.\n\nenv contains:\n====================\n");
-    // for (k, v) in env::vars() {
-    // 	println!("{} : {}", k, v);
-    // }
-    // println!("\n\n");
 }
-
 
 fn main() {
     let pattern: Vec<String> = std::env::args().collect();
 
     for file in &pattern[1..] {
-	let foo: String = fs::read_to_string(file).expect("light it up!");
-	let buf = MessageBuffer::from_json_string((&foo).to_string());
-	let re = Regex::new("<a[^>]+href=\"(?P<link>.*)\"[^>]*>(.*?)</a>").unwrap();
-	for cap in re.captures_iter(r"<a>http://www.linktest.com/</a>") {
-	    println!("REGEX TEST:  {:?}", cap);
-	}
+	let foo: String = fs::read_to_string(file).expect("could not read file");
+	let mut buf = MessageBuffer::from_json_string((&foo).to_string());
+	let mut linkbuffer = LinkBuffer::new();
 
-	let mut linkbuffer: Vec<Link> = Vec::new();
-	let mut numlinks = 0;
-	let mut nummsg = 0;
+	// these are keywords that may indicate a positive signal
+	let score_rules : Vec<&str> = vec!(
+	    "maintainer",
+	    
+	);
+
+	// these are the rules we're going to remove elements by.
+	let cull_rules : Vec<&str> = vec!(
+	    ".gif",
+	    ".png",
+	    "gist.github.com",
+	    "twitter.com",
+	    "amazon.com",
+	    "recurse.com",
+	    "mailto:",
+	    "zulip.com",
+	    ".jpg",
+	    "repl.it",
+	    "facebook.com"
+	);
+
+	// these are culling rules that I'm not sure should be here
+	let potential_cull_rules : Vec<&str> = vec! (
+	    "imgur.com",
+	);
+
+	
+	// remove links from known useless domains
+	buf.cull_list(cull_rules);
+	// remove relative links
+	buf.keep("http");
+
+	buf.dedupe();
+
 	for message in buf.messages {
-	    nummsg = nummsg + 1;
 
-	    let mut links :Vec<String> = Vec::new();
-
+	    let mut linkscore = 0;
+	    let mut linkflags : Vec<String> = Vec::new();
 	    Document::from(message.content.as_str())
 		.find(Name("a"))
 		.filter_map(|n| n.attr("href"))
-		.for_each(|x| links.push(String::from(x)));
-
-	    for link in links {
-		for ol in &linkbuffer {
-		    if ol.message_id == message.id as u32 {
-			println!("dupe found in {}\n\n", message.content);
-		    }
+		.for_each(|x| linkbuffer.push(Link{
+		    url: String::from(x),
+		    message_id: message.id as u32,
+		    stream_id: message.stream_id as u32,
+		    relevance_score: 0,
+		    tags: Vec::new()
 		}
-		numlinks = numlinks + 1;
-		linkbuffer.push(Link::from_message(&message, link));
-	    }
+		)
+		);
+	    println!("Link: {}\n{}\n\n", linkbuffer.last().unwrap().url, message.content);
 
 	}
-	let mut multilink = 0;
-	for link in &linkbuffer {
-	    println!("Found link:\nurl:{}\nmsgid:{}\n", link.url, link.message_id);
-	    for otherlink in &linkbuffer {
-		if link.message_id == otherlink.message_id {
-		    multilink = multilink + 1;
-		}
-	    }
-	}
-	println!("found {} links in {} messages in {}", numlinks, nummsg, file);
-	println!("{} instances of multiple-link messages.", multilink - numlinks);
+	println!("link buffer pre-cull: {}", linkbuffer.len());
+	linkbuffer.dedupe();
+	println!("link buffer post-cull: {}", linkbuffer.len());
+	linkbuffer.printme();
     }
-
     init();
-
 }
+
+trait PrintAll {
+    fn printme(&self);
+}
+
+impl PrintAll for LinkBuffer {
+    fn printme(&self) {
+	for link in self {
+	    println!("Link: {}\nM_ID: {}\n\n", link.url, link.message_id);
+	}
+	println!("printed {} links", self.len());
+    }
+}
+
+type LinkBuffer = Vec<Link>;
+
+trait Cull {
+    fn cull(&mut self, cullstring: &str);
+    fn cull_list(&mut self, culls: Vec<&str>);
+    fn keep(&mut self, keepstring: &str);
+    fn keep_list(&mut self, keeps: Vec<&str>);
+    fn dedupe(&mut self);
+}
+
+impl Cull for LinkBuffer {
+    fn cull(&mut self, cullstring: &str) {
+	self.retain(|x: &Link| !x.url.contains(cullstring));
+    }
+    fn cull_list(&mut self, culls: Vec<&str>) {
+	for cull in culls {
+	    self.retain(|x: &Link| !x.url.contains(cull));
+	}
+    }
+    fn keep(&mut self, keepstring: &str) {
+	self.retain(|x: &Link| x.url.contains(keepstring));
+    }
+    fn keep_list(&mut self, keeps: Vec<&str>) {
+	for keep in keeps {
+	    self.retain(|x: &Link| x.url.contains(keep));
+	}
+    }
+    fn dedupe(&mut self) {
+	self.sort_unstable_by(|a,b | {
+	    a.url.partial_cmp(&b.url).unwrap()
+	});
+	self.dedup_by(|a, b| {
+	    a.url.eq(&b.url)
+	});
+    }
+}
+
+impl Cull for MessageBuffer {
+    fn cull(&mut self, cullstring: &str) {
+	self.messages.retain(|x: &Message| !x.content.contains(cullstring));
+    }
+    fn cull_list(&mut self, culls: Vec<&str>) {
+	for cull in culls {
+	    self.messages.retain(|x: &Message| !x.content.contains(cull));
+	}
+    }
+    fn keep(&mut self, keepstring: &str) {
+	self.messages.retain(|x: &Message| x.content.contains(keepstring));
+    }
+    fn keep_list(&mut self, keeps: Vec<&str>) {
+	for keep in keeps {
+	    self.messages.retain(|x: &Message| x.content.contains(keep));
+	}
+    }
+    fn dedupe(&mut self) {
+	self.messages.sort_unstable_by(|a,b | a.content.partial_cmp(&b.content).unwrap());
+	self.messages.dedup_by(|a, b| a.content.eq(&b.content));
+    }
+}
+
+
+
 
 // This is the format we eventually want Links to live in.
 struct Link {
