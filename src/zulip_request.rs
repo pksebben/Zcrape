@@ -1,5 +1,7 @@
 use subprocess::{Redirection, Exec};
-
+use serde::{Deserialize, Serialize};
+use serde_json::{Deserializer, value::Value};
+use std::fs;
 /*
 Zulip request builder
 
@@ -8,6 +10,40 @@ This module provides an interface for Zulip's api (using curl).
 In order to use narrows and other functionality, it is recommended to always declare *Request types as mutable.
 */
 
+
+#[derive(Serialize, Deserialize)]
+struct MsgPuller {
+    stream_id: u32,
+    bookmark: u32,
+    window_size: u32,
+}
+
+
+// Vestigal. Currently made unnecessary by scrape.sh
+impl MsgPuller {
+    // create new puller, starting at anchor 0
+    fn new(stream_id: u32, window_size: u32) -> MsgPuller {
+	MsgPuller {
+	    stream_id: stream_id,
+	    window_size: window_size,
+	    bookmark: 0,
+	}
+    }
+
+    // initialize puller variables from disk
+    fn from_json(json: &str) -> MsgPuller {
+	let m: MsgPuller = serde_json::from_str(json).expect("failure loading message procesor from json");
+	m
+    }
+
+    // save position as bookmark by deserializing & writing to disk
+    fn save(&self) {
+	let m = serde_json::to_string(&self).expect("could not serialize message puller");
+	let filename = format!("{}.msp", self.stream_id);
+	fs::write(filename, m);
+	// TODO: log
+    }
+}
 
 pub struct Narrow {
     operator: String,
