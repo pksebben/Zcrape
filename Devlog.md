@@ -51,6 +51,11 @@ Second thing is to properly .gitignore stuff and push to repo, post on checkins
 15:20:46:
 Have yet to post.  Thinking about ditching diesel and going back to rusqlite.  
 
+## Friday, November 27, 2020
+
+Up next:
+- finish error handling on http methods
+- get rusqlite up and running and pipe the links out to a db
 # TODO
 
 	for things that don't necessarily fit into a structural todo

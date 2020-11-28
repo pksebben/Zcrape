@@ -1,9 +1,16 @@
 mod conf;
 mod zulip_request;
+use std::error::Error;
 use dotenv::dotenv;
 use std::env;
+use std::collections::HashMap;
 use std::fs;
 use select::{predicate::Name, document::Document};
+use std::fmt;
+use futures::future::{BoxFuture, FutureExt};
+
+use async_std::task;
+use std::time::Duration;
 
 mod cull;
 use crate::cull::Cull;
@@ -22,6 +29,8 @@ use crate::statuscode::check_status_code;
 
 use futures::executor::block_on;
 
+extern crate reqwest;
+
 fn init() {
     // perform app initialization business
     println!("Initializing Zcrape scraper...");
@@ -30,18 +39,125 @@ fn init() {
 
 #[tokio::main]
 async fn main() {
-    block_on(test_req_statuscodes("https://google.com"));
-    println!("get code:{}", block_on(get_code("https://rust-lang.github.io")));
-    init();
+    // block_on(test_req_statuscodes("https://google.com"));
+    // println!("get code:{}", block_on(get_code("https://rust-lang.github.io")));
+    // init();
+    test_cr_st_dropmap().await;
+    
+}
+
+// async fn create_status_dropmap(urls: Vec<&str>) -> HashMap<String, bool> {
+//     let mut dropmap : HashMap<String, bool> = HashMap::new();
+//     for url in urls {
+// 	let retcode = get_code(url).await;
+// 	println!("{}", retcode);
+// 	dropmap.insert(url.to_string(), retcode == "200 OK");
+//     }
+//     dropmap
+// }
+
+async fn test_cr_st_dropmap() {
+    let urls = vec!("https://www.google.com","https://www.thisshouldnotbeasite.com","https://www.github.com");
+    let mut fmap : HashMap<String, LinkStatus>;
+    fmap = process_failmap(urls).await;
+    println!("{:?}", fmap);
+    // let dm = block_on(create_status_dropmap(urls));
+    // println!("{:?}", dm);
 }
 
 async fn test_req_statuscodes( url : &str) {
     println!("{:?}", check_status_code(url).await.expect("bad status return"));
-    
 }
 
-async fn get_code(url: &str) -> String {
-    check_status_code(url).await.expect("somthing be wrong").to_string()
+#[derive(Debug)]
+enum RFail {
+    Req(reqwest::Error),
+    Timeout,
+    Status(reqwest::StatusCode),
+    Conn,
+    Panic(reqwest::Error)
+}
+
+fn rqe_handler(e: reqwest::Error) -> RFail {
+    if e.is_request() {
+	println!("bad request: {}", e); // DNS failures occur here.  Can we get more specific?
+	RFail::Req(e)
+    } else if e.is_status() {
+	println!("got status: {}", e); // here we want to bubble the status code up
+	RFail::Status(e.status().expect("umwut"))
+    } else if e.is_connect() {
+	println!("connection err: {}", e); // here we want to fail quietly and shelve the link
+	RFail::Conn
+    } else if e.is_timeout() {
+	println!("request timeout"); // here we want to pause execution and wait. 
+	RFail::Timeout
+    } else {
+	panic!("unknown err {}", e)
+    }
+}
+
+// //////////////////////////////////////////////////////////////////////////////////////////////////// COFFEE AT WORK
+#[derive(Debug)]
+enum LinkStatus {
+    Bad(RFail),
+    Good
+}
+
+async fn process_failmap(urls: Vec<&'static str>) -> HashMap<String, LinkStatus> {
+    let mut failmap : HashMap<String, LinkStatus> = HashMap::new();
+    for url in &urls {
+	spawn_async_status_check(url, &mut failmap).await.expect("something went wrong with super_long_function_call");
+    }
+
+    while &urls.len() > &failmap.len() {
+	println!("awaiting hashmap population...");
+	async_std::task::sleep(Duration::from_secs(2));
+    }
+    failmap
+}
+
+async fn spawn_async_status_check(url: &'static str, failmap: &mut HashMap<String, LinkStatus>) -> Result<(), Box<dyn Error>> {
+    // here is the place that we assign values to the failure map
+
+    // we need to run the query code (which is recursively async due to timeouts)...
+    let status: LinkStatus = get_code(url).await;
+    failmap.insert(url.to_string(), status);
+    Ok(())
+
+    // ...and push the return of that query code to the failmap
+}
+
+fn get_code(url: &'static str) -> BoxFuture<'static, LinkStatus> {
+    async move {
+	match check_status_code(url).await {
+	    Ok(data) => LinkStatus::Good,
+	    Err(err) => {
+		match rqe_handler(err) {
+		    RFail::Req(e) => {
+			println!("reqerror {}: {}", e, url);
+			LinkStatus::Bad(RFail::Req(e))
+		    },
+		    RFail::Timeout => {
+			println!("timeout: {}", &url);
+			async_std::task::sleep(Duration::from_secs(2));
+			get_code(url).await
+		    },
+		    RFail::Conn => {
+			println!("connection error: {}", &url);
+			LinkStatus::Bad(RFail::Conn)
+		    },
+		    RFail::Status(stat) => {
+			println!("{} : {}", stat, &url);
+			LinkStatus::Bad(RFail::Status(stat))
+		    },
+		    RFail::Panic(err) => {
+			panic!("failed to retrieve error code: {}", err)
+		    }
+		    
+		}  
+	    }
+	}
+    }.boxed()
 }
 
 // This is the grabbag of junk to probe the pipeline.  Tweak at will.
