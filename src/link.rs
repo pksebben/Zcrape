@@ -4,6 +4,22 @@ use crate::message::Message;
 
 pub type LinkBuffer = Vec<Link>;
 
+
+pub trait LinkBufferBehavior {
+    fn url_list(&self) -> Vec<String>; 
+}
+
+impl LinkBufferBehavior for LinkBuffer {
+    fn url_list(&self) -> Vec<String> {
+	let mut url_list : Vec<String> = Vec::new();
+	for l in self {
+	    url_list.push(l.url.to_string());
+	}
+	url_list
+    }
+    
+}
+
 impl Cull for LinkBuffer {
     fn cull(&mut self, cullstring: &str) {
 	self.retain(|x: &Link| !x.url.contains(cullstring));

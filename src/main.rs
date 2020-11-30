@@ -1,15 +1,21 @@
 mod conf;
 mod zulip_request;
-use std::error::Error;
+use crate::link::LinkBufferBehavior;
 use dotenv::dotenv;
-use std::env;
+use select::{document::Document, predicate::Name};
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs;
-use select::{predicate::Name, document::Document};
-use std::fmt;
-use futures::future::{BoxFuture, FutureExt};
+use std::thread::JoinHandle;
+asdasd
+fn borkd() -> String {2};
 
-use async_std::task;
+// use futures::future::{BoxFuture, FutureExt};
+// use async_std::task;
+use tokio::runtime;
+
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 mod cull;
@@ -17,12 +23,12 @@ use crate::cull::Cull;
 
 mod link;
 use crate::link::{Link, LinkBuffer, PrintAll};
-    
+
 mod message;
-use crate::message::{MessageBuffer};
+use crate::message::MessageBuffer;
 
 mod streams;
-use crate::streams::{Streams, Populate};
+use crate::streams::{Populate, Streams};
 
 mod statuscode;
 use crate::statuscode::check_status_code;
@@ -31,200 +37,250 @@ use futures::executor::block_on;
 
 extern crate reqwest;
 
-fn init() {
-    // perform app initialization business
-    println!("Initializing Zcrape scraper...");
-    dotenv().ok();
+fn main() {
+    // test_async_status_check().await;
+    test_message_fn(print_pmfm);
+    println!("done!");
 }
 
-#[tokio::main]
-async fn main() {
-    // block_on(test_req_statuscodes("https://google.com"));
-    // println!("get code:{}", block_on(get_code("https://rust-lang.github.io")));
-    // init();
-    test_cr_st_dropmap().await;
-    
+// I built something needlessly complex.  Let's try and detangle it
+
+// Step 1: test_message_fn(f: fn(MessageBuffer))
+// :: this actually grabs the files from args and runs the f() on all of them
+// :: it grabs the messages and culls them, and then passes to f.  That's all it does.
+
+// Step 2:
+// :: f should :
+// -take a MessageBuffer as an argument
+// -output nothing
+
+#[derive(Debug)]
+enum LinkStatus {
+    Bad(RFail),
+    Good,
+}
+type StatusMap = HashMap<String, LinkStatus>;
+
+// testing wrapper to pass to test fn
+
+fn print_pmfm(mb: MessageBuffer) {
+    // cast to link buffer
+    let lb = msgbuf_to_linkbuf(mb);
+
+    // pull urls from link buffer
+
+    let results = procmult_fmap(lb);
+    println!("Processing failure map...");
+    for r in results {
+        println!("{:?}\n", r);
+    }
 }
 
-// async fn create_status_dropmap(urls: Vec<&str>) -> HashMap<String, bool> {
-//     let mut dropmap : HashMap<String, bool> = HashMap::new();
-//     for url in urls {
-// 	let retcode = get_code(url).await;
-// 	println!("{}", retcode);
-// 	dropmap.insert(url.to_string(), retcode == "200 OK");
-//     }
-//     dropmap
-// }
+fn procmult_fmap(lb: LinkBuffer) -> StatusMap {
+    let urls = lb.url_list();
 
-async fn test_cr_st_dropmap() {
-    let urls = vec!("https://www.google.com","https://www.thisshouldnotbeasite.com","https://www.github.com");
-    let mut fmap : HashMap<String, LinkStatus>;
-    fmap = process_failmap(urls).await;
-    println!("{:?}", fmap);
-    // let dm = block_on(create_status_dropmap(urls));
-    // println!("{:?}", dm);
+    let (tx, rx) = mpsc::channel();
+
+    let mut statmap = StatusMap::new();
+
+    for u in urls {
+        let btx = mpsc::Sender::clone(&tx);
+        thread::spawn(move || {
+            let resolved = (u.to_string(), get_code(u.to_string(), 0));
+            btx.send(resolved).unwrap();
+        });
+    }
+
+    for received in rx {
+        statmap.insert(received.0.to_string(), received.1);
+    }
+    statmap
 }
 
-async fn test_req_statuscodes( url : &str) {
-    println!("{:?}", check_status_code(url).await.expect("bad status return"));
+
+
+fn msgbuf_to_linkbuf(mbuf: MessageBuffer) -> LinkBuffer {
+    let mut linkbuffer = LinkBuffer::new();
+    for message in mbuf.messages {
+        // let linkscore = 0;
+        // let mut linkflags: Vec<String> = Vec::new();
+        Document::from(message.content.as_str())
+            .find(Name("a"))
+            .filter_map(|n| n.attr("href"))
+            .for_each(|x| {
+                linkbuffer.push(Link {
+                    url: String::from(x),
+                    message_id: message.id as u32,
+                    stream_id: message.stream_id as u32,
+                    relevance_score: 0,
+                    tags: message.extract_tags(),
+                })
+            });
+    }
+    linkbuffer
 }
 
+// this is a wrapper to bundle particular state with failure types
 #[derive(Debug)]
 enum RFail {
     Req(reqwest::Error),
     Timeout,
     Status(reqwest::StatusCode),
     Conn,
-    Panic(reqwest::Error)
+    Panic(reqwest::Error),
+    Ignored(reqwest::Error),
+    TimedOut,
 }
 
+// this layer is only here because I couldn't figure out why Rust complained about
+// reqwest::Error not having the .is_request() fn when used elsewhere.
+// that said, I changed versions since....
 fn rqe_handler(e: reqwest::Error) -> RFail {
     if e.is_request() {
-	println!("bad request: {}", e); // DNS failures occur here.  Can we get more specific?
-	RFail::Req(e)
+        println!("bad request: {}", e); // DNS failures occur here.  Can we get more specific?
+        RFail::Req(e)
     } else if e.is_status() {
-	println!("got status: {}", e); // here we want to bubble the status code up
-	RFail::Status(e.status().expect("umwut"))
+        println!("got status: {}", e); // here we want to bubble the status code up
+        RFail::Status(
+            e.status()
+                .expect("unknown failure in reqwest::Error::Status"),
+        )
     } else if e.is_connect() {
-	println!("connection err: {}", e); // here we want to fail quietly and shelve the link
-	RFail::Conn
+        println!("connection err: {}", e); // here we want to fail quietly and shelve the link
+        RFail::Conn
     } else if e.is_timeout() {
-	println!("request timeout"); // here we want to pause execution and wait. 
-	RFail::Timeout
+        println!("request timeout"); // here we want to pause execution and wait.
+        RFail::Timeout
+    } else if e.is_builder() {
+        println!("WE'RE ON A LIIIIINK TO NOOOWHEEERE");
+        RFail::Ignored(e)
     } else {
-	panic!("unknown err {}", e)
+        panic!("unknown err {} on {:?}\n\n{:#?}", e, e.url(), e)
     }
 }
 
-// //////////////////////////////////////////////////////////////////////////////////////////////////// COFFEE AT WORK
-#[derive(Debug)]
-enum LinkStatus {
-    Bad(RFail),
-    Good
-}
-
-async fn process_failmap(urls: Vec<&'static str>) -> HashMap<String, LinkStatus> {
-    let mut failmap : HashMap<String, LinkStatus> = HashMap::new();
-    for url in &urls {
-	spawn_async_status_check(url, &mut failmap).await.expect("something went wrong with super_long_function_call");
+fn get_code(url: String, timeout: u32) -> LinkStatus {
+    match check_status_code(url.to_string()) {
+        Ok(data) => LinkStatus::Good,
+        Err(e) => {
+            if e.is_request() {
+                println!("bad request: {}", e); // DNS failures occur here.  Can we get more specific?
+                LinkStatus::Bad(RFail::Req(e))
+            } else if e.is_status() {
+                println!("got status: {}", e); // here we want to bubble the status code up
+                LinkStatus::Bad(RFail::Status(
+                    e.status()
+                        .expect("unknown failure in reqwest::Error::Status"),
+                ))
+            } else if e.is_connect() {
+                println!("connection err: {}", e); // here we want to fail quietly and shelve the link
+                LinkStatus::Bad(RFail::Conn)
+            } else if e.is_timeout() {
+                if timeout < 10 {
+                    println!("timeout retry: {}/10", timeout);
+                    get_code(url, timeout + 1)
+                } else {
+                    println!("request timeout"); // here we want to pause execution and wait.
+                    LinkStatus::Bad(RFail::Timeout)
+                }
+            } else if e.is_builder() {
+                println!("WE'RE ON A LIIIIINK TO NOOOWHEEERE");
+                LinkStatus::Bad(RFail::Ignored(e))
+            } else {
+                panic!("unknown err {} on {:?}\n\n{:#?}", e, e.url(), e)
+            }
+        }
     }
+}
 
-    while &urls.len() > &failmap.len() {
-	println!("awaiting hashmap population...");
-	async_std::task::sleep(Duration::from_secs(2));
+// load in a message buffer and check the urls for status codes
+fn test_bulk_message_status_check() {
+    let pattern: Vec<String> = std::env::args().collect();
+    for file in &pattern[1..] {}
+}
+
+// test functions against a culled version of live-data message buffer(s)
+fn test_message_fn(f: fn(T: MessageBuffer)) {
+    let pattern: Vec<String> = std::env::args().collect();
+    for file in &pattern[1..] {
+        let foo: String = fs::read_to_string(file).expect("could not read file");
+        let mut buf = MessageBuffer::from_json_string((&foo).to_string());
+        cull_msgbuf(&mut buf);
+        f(buf)
     }
-    failmap
 }
 
-async fn spawn_async_status_check(url: &'static str, failmap: &mut HashMap<String, LinkStatus>) -> Result<(), Box<dyn Error>> {
-    // here is the place that we assign values to the failure map
-
-    // we need to run the query code (which is recursively async due to timeouts)...
-    let status: LinkStatus = get_code(url).await;
-    failmap.insert(url.to_string(), status);
-    Ok(())
-
-    // ...and push the return of that query code to the failmap
-}
-
-fn get_code(url: &'static str) -> BoxFuture<'static, LinkStatus> {
-    async move {
-	match check_status_code(url).await {
-	    Ok(data) => LinkStatus::Good,
-	    Err(err) => {
-		match rqe_handler(err) {
-		    RFail::Req(e) => {
-			println!("reqerror {}: {}", e, url);
-			LinkStatus::Bad(RFail::Req(e))
-		    },
-		    RFail::Timeout => {
-			println!("timeout: {}", &url);
-			async_std::task::sleep(Duration::from_secs(2));
-			get_code(url).await
-		    },
-		    RFail::Conn => {
-			println!("connection error: {}", &url);
-			LinkStatus::Bad(RFail::Conn)
-		    },
-		    RFail::Status(stat) => {
-			println!("{} : {}", stat, &url);
-			LinkStatus::Bad(RFail::Status(stat))
-		    },
-		    RFail::Panic(err) => {
-			panic!("failed to retrieve error code: {}", err)
-		    }
-		    
-		}  
-	    }
-	}
-    }.boxed()
+// culls in-place. Mutates.
+fn cull_msgbuf(m: &mut MessageBuffer) {
+    let cull_rules: Vec<&str> = vec![
+        ".gif",
+        ".png",
+        "gist.github.com",
+        "twitter.com",
+        "amazon.com",
+        "recurse.com",
+        "mailto:",
+        "zulip.com",
+        ".jpg",
+        "repl.it",
+        "facebook.com",
+    ];
+    m.cull_list(cull_rules);
+    m.keep("http");
+    m.dedupe();
 }
 
 // This is the grabbag of junk to probe the pipeline.  Tweak at will.
 fn test_message_pipeline() {
     let pattern: Vec<String> = std::env::args().collect();
-    let mut streams: Streams = Streams::new();
-    streams.from_json(fs::read_to_string("streams.json").expect("could not read streams.json"));
-    for stream in streams {
-	println!("{} : {}", stream.0, stream.1);
-    }
+
     for file in &pattern[1..] {
-	let foo: String = fs::read_to_string(file).expect("could not read file");
-	let mut buf = MessageBuffer::from_json_string((&foo).to_string());
-	let mut linkbuffer = LinkBuffer::new();
+        let foo: String = fs::read_to_string(file).expect("could not read file");
+        let mut buf = MessageBuffer::from_json_string((&foo).to_string());
+        let mut linkbuffer = LinkBuffer::new();
 
-	// these are the rules we're going to remove elements by.
-	let cull_rules : Vec<&str> = vec!(
-	    ".gif",
-	    ".png",
-	    "gist.github.com",
-	    "twitter.com",
-	    "amazon.com",
-	    "recurse.com",
-	    "mailto:",
-	    "zulip.com",
-	    ".jpg",
-	    "repl.it",
-	    "facebook.com"
-	);
+        // these are the rules we're going to remove elements by.
+        let cull_rules: Vec<&str> = vec![
+            ".gif",
+            ".png",
+            "gist.github.com",
+            "twitter.com",
+            "amazon.com",
+            "recurse.com",
+            "mailto:",
+            "zulip.com",
+            ".jpg",
+            "repl.it",
+            "facebook.com",
+        ];
 
-	// these are culling rules that I'm not sure should be here
-	let potential_cull_rules : Vec<&str> = vec! (
-	    "imgur.com",
-	);
+        // these are culling rules that I'm not sure should be here
+        let potential_cull_rules: Vec<&str> = vec!["imgur.com"];
 
-	
-	// remove links from known useless domains
-	buf.cull_list(cull_rules);
-	// remove relative links
-	buf.keep("http");
+        // remove links from known useless domains
+        buf.cull_list(cull_rules);
+        // remove relative links
+        buf.keep("http");
 
-	buf.dedupe();
+        buf.dedupe();
 
-	for message in buf.messages {
-
-	    let mut linkscore = 0;
-	    let mut linkflags : Vec<String> = Vec::new();
-	    Document::from(message.content.as_str())
-		.find(Name("a"))
-		.filter_map(|n| n.attr("href"))
-		.for_each(|x| linkbuffer.push(Link{
-		    url: String::from(x),
-		    message_id: message.id as u32,
-		    stream_id: message.stream_id as u32,
-		    relevance_score: 0,
-		    tags: message.extract_tags()
-		}
-		)
-		);
-	    // println!("Link: {}\n{}\n\n", linkbuffer.last().unwrap().url, message.content);
-
-	}
-	// println!("link buffer pre-cull: {}", linkbuffer.len());
-	// linkbuffer.dedupe();
-	// println!("link buffer post-cull: {}", linkbuffer.len());
-	// linkbuffer.printme();
-    }   
+        for message in buf.messages {
+            // let mut linkscore = 0;
+            // let mut linkflags: Vec<String> = Vec::new();
+            Document::from(message.content.as_str())
+                .find(Name("a"))
+                .filter_map(|n| n.attr("href"))
+                .for_each(|x| {
+                    linkbuffer.push(Link {
+                        url: String::from(x),
+                        message_id: message.id as u32,
+                        stream_id: message.stream_id as u32,
+                        relevance_score: 0,
+                        tags: message.extract_tags(),
+                    })
+                });
+        }
+    }
 }
 
 /*
@@ -237,7 +293,6 @@ SOFT(ER) PROBLEMS
 [ ] 404, 504 checking
 
 */
-
 
 /*
 CULLING RULES
@@ -267,7 +322,7 @@ Stream
   blogs
   stackoverflow
   github
-  
+
 
 If we assume a robust mechanic for end-user sorting, we may not need such granular filtering.
 
@@ -283,3 +338,94 @@ url,
 }
 */
 
+// Probably Deprecated. in favor of procmult_failmap
+
+// async fn process_failmap(urls: Vec<String>) -> HashMap<String, LinkStatus> {
+//     let mut failmap : HashMap<String, LinkStatus> = HashMap::new();
+//     for url in &urls {
+// 	let handle = spawn_multithread_status_check(url.to_string(), &mut failmap).await.expect("something went wrong with super_long_function_call");
+//     }
+
+//     while &urls.len() > &failmap.len() {
+// 	println!("awaiting hashmap population...");
+// 	async_std::task::sleep(Duration::from_secs(2));
+//     }
+//     failmap
+// }
+
+// Deprecated in favor of procmult_failmap
+
+// // this is the entry point that *should* create a new thread
+// fn spawn_multithread_status_check(url: String, failmap: & mut HashMap<String, LinkStatus>) {
+//     // here is the place that we assign values to the failure map
+//     // we need to run the query code (which is recursively async due to timeouts)...
+//     thread::spawn(move || {
+// 	let status: LinkStatus = get_code(url.to_string(), 0);
+// 	failmap.insert(url, status);
+//     });
+
+//     // ...and push the return of that query code to the failmap
+// }
+
+// ///////////////   deprecated   ///////////////
+// //////////////////////////////////////////////////////////////////////
+// I want to do more work on async, because it's suuuuperrrr coooollllll
+// BUT This is probably better served by being multithreaded.
+//
+// fn get_code(url: String, timeout: u32) -> BoxFuture<'static, LinkStatus> {
+//     async move {
+
+// 	match check_status_code(url.to_string()).await {
+// 	    Ok(data) => LinkStatus::Good,
+// 	    Err(e) => {
+// 		if e.is_request() {
+// 		    println!("bad request: {}", e); // DNS failures occur here.  Can we get more specific?
+// 		    LinkStatus::Bad(RFail::Req(e))
+// 		} else if e.is_status() {
+// 		    println!("got status: {}", e); // here we want to bubble the status code up
+// 		    LinkStatus::Bad(RFail::Status(e.status().expect("unknown failure in reqwest::Error::Status")))
+// 		} else if e.is_connect() {
+// 		    println!("connection err: {}", e); // here we want to fail quietly and shelve the link
+// 		    LinkStatus::Bad(RFail::Conn)
+// 		} else if e.is_timeout() {
+// 		    if timeout < 10 {
+// 			println!("timeout retry: {}/10", timeout);
+// 			async_std::task::sleep(Duration::from_secs(2));
+// 			get_code(url, timeout + 1).await
+// 		    } else {
+// 			println!("request timeout"); // here we want to pause execution and wait.
+// 			LinkStatus::Bad(RFail::Timeout)
+// 		    }
+// 		} else if e.is_builder() {
+// 		    println!("WE'RE ON A LIIIIINK TO NOOOWHEEERE");
+// 		    LinkStatus::Bad(RFail::Ignored(e))
+// 		}
+// 		else{
+// 		    panic!("unknown err {} on {:?}\n\n{:#?}", e, e.url(), e)
+// 		}
+// 	    }
+
+// 	}
+//     }.boxed()
+// }
+
+// I believe that this was deprecated in favor of procmult_failmap
+// but was also hacked from async => multithreaded
+// and might be necessary for reimplementing async
+
+// I was tired the last time I hacked on this
+
+// fn run_msgbuf_via_sasc(m: MessageBuffer) {
+//     // translate the message buffer to Vec<url>
+//     let mut urls: Vec<String> = Vec::new();
+//     let linkbuffer = msgbuf_to_linkbuf(m);
+//     for link in linkbuffer {
+// 	urls.push(link.url.to_string());
+//     }
+
+//     // run the hashing algo against that vec
+//     let x = process_failmap(urls);
+
+//     // print it
+//     println!("{:?}", block_on(x));
+// }

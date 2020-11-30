@@ -6,6 +6,7 @@ use serde_json::{Deserializer, value::Value};
 
 use crate::cull::Cull;
 
+//TODO:  this should be a typedef
 #[derive(Serialize, Deserialize)]
 pub struct MessageBuffer {
     // may need https://serde.rs/impl-serialize.html

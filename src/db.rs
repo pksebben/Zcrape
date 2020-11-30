@@ -12,9 +12,6 @@ Using diesel.
 
 */
 
-
-
-
 /*
 Bigger questions:
 -- Is it possible / advisable to keep the connection open as an object on the DB?
@@ -26,15 +23,30 @@ It looks like serde has some functions that can be used to create the schema.
 */
 
 
-// let sql = "CREATE TABLE if NOT EXISTS message (
-// id INTEGER PRIMARY KEY,
-// flags BLOB,
-// content TEXT NOT NULL,
-// timestamp INTEGER NOT NULL,
-// subject TEXT,
-// display_recipient TEXT,
-// stream_id INTEGER,
-// )";
+fn init() {
+
+    let schema = ["CREATE TABLE if NOT EXISTS message (
+id INTEGER PRIMARY KEY,
+flags BLOB,
+content TEXT NOT NULL,
+timestamp INTEGER NOT NULL,
+subject TEXT,
+display_recipient TEXT,
+stream_id INTEGER,
+)",
+    "CREATE TABLE if NOT EXISTS link (
+id INTEGER PRIMARY KEY,
+stream_id INTEGER NOT NULL,
+relevance_score INTEGER,
+tags BLOB,
+url STRING NOT NULL,
+message_id INTEGER NOT NULL)"];
+    
+   
+}
+
+
+
 
 // object to handle db connections etc.
 pub struct DB {
@@ -57,10 +69,17 @@ impl DB {
 	self.schema.push(schema.to_string());
     }
 
-    // pub fn make_all_tables(&self) {
-	
-    // 	self.conn.execute()
-    // }
+    pub fn make_all_tables(&self, schema: Vec<&str>) -> Result<(), Box<dyn Error>> {
+	for t in schema {
+    	    self.conn.execute(t)?;
+	}
+	Ok(())
+    }
+
+    pub fn insert(link: Link) -> Result<(), Box<dyn Error>> {
+	self.conn.execute(format!("INSERT INTO link (message_id, stream_id, relevance_score, tags, url) VALUES ({}, {}, {}, {}, {})", link.message_id, link.stream_id, link.relevance_score, link.tags, link.url))?;
+	Ok(())
+    }
 
 }   
 // //     fn create_all(&self, schema: Schema) {

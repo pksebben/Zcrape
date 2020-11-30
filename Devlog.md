@@ -61,3 +61,10 @@ Up next:
 	for things that don't necessarily fit into a structural todo
 	
  - Prep a test to see if multiple concurrent requests can work given zulip's api.
+
+## Saturday, November 28, 2020
+
+Today I am shaving some Yaks.
+
+on stage:
+Debugging!  Downloading lldb project for a backend, and going to wire it in.  Leaving these intstructions open b/c the dl is huge.
