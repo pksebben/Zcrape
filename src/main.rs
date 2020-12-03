@@ -1,47 +1,185 @@
+#![allow(unused_must_use, dead_code, unused_imports, unused_variables)]
 mod conf;
 mod zulip_request;
+use std::os::raw::c_int;
 use crate::link::LinkBufferBehavior;
-use dotenv::dotenv;
 use select::{document::Document, predicate::Name};
 use std::collections::HashMap;
-use std::error::Error;
 use std::fs;
-use std::thread::JoinHandle;
-asdasd
-fn borkd() -> String {2};
+use std::fs::{File, OpenOptions};
+use std::io::prelude::*;
+use rusqlite::trace::config_log;
 
 // use futures::future::{BoxFuture, FutureExt};
 // use async_std::task;
-use tokio::runtime;
+// use tokio::runtime;
 
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+// use std::time::Duration;
+
+mod db;
+use crate::db::DB;
 
 mod cull;
 use crate::cull::Cull;
 
 mod link;
-use crate::link::{Link, LinkBuffer, PrintAll};
+use crate::link::{Link, LinkBuffer};
 
 mod message;
 use crate::message::MessageBuffer;
 
-mod streams;
-use crate::streams::{Populate, Streams};
+// mod streams;
+// use crate::streams::{Populate, Streams};
 
 mod statuscode;
 use crate::statuscode::check_status_code;
 
-use futures::executor::block_on;
-
 extern crate reqwest;
 
-fn main() {
-    // test_async_status_check().await;
-    test_message_fn(print_pmfm);
-    println!("done!");
+fn log(i: c_int, s:&str) {
+    println!("sqlite error \n{}\n{}", i, s);
 }
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+   { 
+    config_log(Some(log))?;
+   }
+    println!("Preparing to dump json into sqlite...");
+    // for each
+    let mut db: DB = DB::new("links.db")?;
+    db.make_all_tables()?;
+
+    execute_on_args(&mut db)?;
+
+    Ok(())
+}
+
+fn execute_on_args(db: &mut DB) -> Result<(), Box<dyn std::error::Error>> {
+    let pattern: Vec<String> = std::env::args().collect();
+
+    let mut complist = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .read(true)
+        .open("completion_list.txt")?;
+    // TODO: truncate pattern[] by list in
+
+    let mut uniqueurls: Vec<String> = Vec::new();
+    let mut numlink = 0;
+    for file in &pattern[1..] {
+        println!("reading file :: {} :::::::::::::::", &file);
+        let foo: String = fs::read_to_string(file).expect("could not read file");
+        let mut buf = MessageBuffer::from_json_string((&foo).to_string());
+
+        // these are the rules we're going to remove elements by.
+        let cull_rules: Vec<&str> = vec![
+            ".gif",
+            ".png",
+            "gist.github.com",
+            "twitter.com",
+            "amazon.com",
+            "recurse.com",
+            "mailto:",
+            "zulip.com",
+            ".jpg",
+            "repl.it",
+            "facebook.com",
+        ];
+
+        // these are culling rules that I'm not sure should be here
+        let potential_cull_rules: Vec<&str> = vec!["imgur.com"];
+
+        // remove links from known useless domains
+        buf.cull_list(cull_rules);
+        // remove relative links
+        buf.keep("http");
+
+        buf.dedupe();
+
+        let mut linkbuffer = LinkBuffer::from_msgbuffer(buf);
+
+        linkbuffer.keep("http");
+
+        let urllist = linkbuffer.url_list();
+
+        db.dump_linkbuffer(linkbuffer);
+
+        for link in &urllist {
+            // This was the old way.
+            //
+            // let mut a : usize = 1;
+            // let mut b : usize = 2;
+            // let mut tld : &str;
+            // let mut tlds : Vec<&str>;
+
+            println!("{}", link);
+            uniqueurls.push(extract_domain(link.to_string()));
+            println!("{}", extract_domain(link.to_string()));
+            // let s : Vec<&str> = link.split(".").collect();
+            // if s.len() <= 1 {
+            // 	a = 0;
+            // 	b = 0;
+            // } else if s.len() <= 2 {
+            // 	a = 0;
+            // 	b = 1;
+            // }
+            // let domain = &s[a];
+            // if s[b].contains("/") {
+            // 	tlds = s[b].split("/").collect();
+            // 	tld = tlds[0];
+            // } else {
+            // 	tld = s[b];
+            // }
+            // println!("split link: {} {}\n", domain, tld);
+        }
+
+        numlink = &numlink + urllist.len();
+        // &mut db.dump_linkbuffer(linkbuffer)?;
+
+        // &complist.write(file.as_bytes())?;
+
+        // println!("wrote: {}", file);
+    }
+
+    uniqueurls.sort();
+    uniqueurls.dedup();
+
+    for url in &uniqueurls {
+        println!("{}", url);
+    }
+    println!("found {} unique domains", uniqueurls.len());
+
+    println!("out of {} total links", numlink);
+    Ok(())
+}
+
+fn extract_domain(link: String) -> String {
+    let s: String;
+    if link[..6].contains("https") {
+        s = link.strip_prefix("https://").unwrap().to_string();
+    } else {
+        s = link.strip_prefix("http://").unwrap().to_string();
+    }
+    let mut o: Vec<&str> = s.split(".").collect();
+    if o[0] == "www" {
+        o.remove(0);
+    }
+    if o.len() < 2 {
+        o[0].to_string()
+    } else {
+        if o[1].contains("/") {
+            let p: Vec<&str> = o[1].split("/").collect();
+            let q: String = p[0].to_string();
+            format!("{}.{}", o[0].to_string(), q)
+        } else {
+            format!("{}.{}", o[0].to_string(), o[1].to_string())
+        }
+    }
+}
+
+fn test_db_connect() {}
 
 // I built something needlessly complex.  Let's try and detangle it
 
@@ -65,8 +203,7 @@ type StatusMap = HashMap<String, LinkStatus>;
 
 fn print_pmfm(mb: MessageBuffer) {
     // cast to link buffer
-    let lb = msgbuf_to_linkbuf(mb);
-
+    let lb = LinkBuffer::from_msgbuffer(mb);
     // pull urls from link buffer
 
     let results = procmult_fmap(lb);
@@ -97,28 +234,26 @@ fn procmult_fmap(lb: LinkBuffer) -> StatusMap {
     statmap
 }
 
-
-
-fn msgbuf_to_linkbuf(mbuf: MessageBuffer) -> LinkBuffer {
-    let mut linkbuffer = LinkBuffer::new();
-    for message in mbuf.messages {
-        // let linkscore = 0;
-        // let mut linkflags: Vec<String> = Vec::new();
-        Document::from(message.content.as_str())
-            .find(Name("a"))
-            .filter_map(|n| n.attr("href"))
-            .for_each(|x| {
-                linkbuffer.push(Link {
-                    url: String::from(x),
-                    message_id: message.id as u32,
-                    stream_id: message.stream_id as u32,
-                    relevance_score: 0,
-                    tags: message.extract_tags(),
-                })
-            });
-    }
-    linkbuffer
-}
+// fn msgbuf_to_linkbuf(mbuf: MessageBuffer) -> LinkBuffer {
+//     let mut linkbuffer = LinkBuffer::new();
+//     for message in mbuf.messages {
+//         // let linkscore = 0;
+//         // let mut linkflags: Vec<String> = Vec::new();
+//         Document::from(message.content.as_str())
+//             .find(Name("a"))
+//             .filter_map(|n| n.attr("href"))
+//             .for_each(|x| {
+//                 linkbuffer.push(Link {
+//                     url: String::from(x),
+//                     message_id: message.id as u32,
+//                     stream_id: message.stream_id as u32,
+//                     relevance_score: 0,
+//                     tags: message.extract_tags(),
+//                 })
+//             });
+//     }
+//     linkbuffer
+// }
 
 // this is a wrapper to bundle particular state with failure types
 #[derive(Debug)]
@@ -231,57 +366,7 @@ fn cull_msgbuf(m: &mut MessageBuffer) {
 }
 
 // This is the grabbag of junk to probe the pipeline.  Tweak at will.
-fn test_message_pipeline() {
-    let pattern: Vec<String> = std::env::args().collect();
-
-    for file in &pattern[1..] {
-        let foo: String = fs::read_to_string(file).expect("could not read file");
-        let mut buf = MessageBuffer::from_json_string((&foo).to_string());
-        let mut linkbuffer = LinkBuffer::new();
-
-        // these are the rules we're going to remove elements by.
-        let cull_rules: Vec<&str> = vec![
-            ".gif",
-            ".png",
-            "gist.github.com",
-            "twitter.com",
-            "amazon.com",
-            "recurse.com",
-            "mailto:",
-            "zulip.com",
-            ".jpg",
-            "repl.it",
-            "facebook.com",
-        ];
-
-        // these are culling rules that I'm not sure should be here
-        let potential_cull_rules: Vec<&str> = vec!["imgur.com"];
-
-        // remove links from known useless domains
-        buf.cull_list(cull_rules);
-        // remove relative links
-        buf.keep("http");
-
-        buf.dedupe();
-
-        for message in buf.messages {
-            // let mut linkscore = 0;
-            // let mut linkflags: Vec<String> = Vec::new();
-            Document::from(message.content.as_str())
-                .find(Name("a"))
-                .filter_map(|n| n.attr("href"))
-                .for_each(|x| {
-                    linkbuffer.push(Link {
-                        url: String::from(x),
-                        message_id: message.id as u32,
-                        stream_id: message.stream_id as u32,
-                        relevance_score: 0,
-                        tags: message.extract_tags(),
-                    })
-                });
-        }
-    }
-}
+fn test_message_pipeline() {}
 
 /*
 TODO:

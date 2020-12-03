@@ -1,52 +1,33 @@
-use rusqlite::{Connection, Result,  params};
 use rusqlite::NO_PARAMS;
-use serde::{Deserialize, Serialize, ser};
-use serde_json::{Value};
-use crate::Message;
+use rusqlite::{params, Connection, Result};
+use serde::{ser, Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::link::{Link, LinkBuffer, LinkBufferBehavior, TagBehavior, Tags};
+use crate::message::{Message, MessageBuffer};
 use std::collections::HashMap;
 
-/*
-THIS WHOLE MODULE NEEDS REWORKED!
+// fn init() {
 
-Using diesel.
+//     let schema = ["CREATE TABLE if NOT EXISTS message (
+// id INTEGER PRIMARY KEY,
+// flags BLOB,
+// content TEXT NOT NULL,
+// timestamp INTEGER NOT NULL,
+// subject TEXT,
+// display_recipient TEXT,
+// stream_id INTEGER,
+// )",
+//     "CREATE TABLE if NOT EXISTS link (
+// id INTEGER PRIMARY KEY,
+// domain STRING,
+// stream_id INTEGER NOT NULL,
+// relevance_score INTEGER,
+// tags STRING,
+// url STRING NOT NULL,
+// message_id INTEGER NOT NULL)"];
 
-*/
-
-/*
-Bigger questions:
--- Is it possible / advisable to keep the connection open as an object on the DB?
--- Can we write a macro to create db schema?
--- _Should_ we write a macro to create db schema?
-TODO: go learn macros, and return, young one.
-
-It looks like serde has some functions that can be used to create the schema.
-*/
-
-
-fn init() {
-
-    let schema = ["CREATE TABLE if NOT EXISTS message (
-id INTEGER PRIMARY KEY,
-flags BLOB,
-content TEXT NOT NULL,
-timestamp INTEGER NOT NULL,
-subject TEXT,
-display_recipient TEXT,
-stream_id INTEGER,
-)",
-    "CREATE TABLE if NOT EXISTS link (
-id INTEGER PRIMARY KEY,
-stream_id INTEGER NOT NULL,
-relevance_score INTEGER,
-tags BLOB,
-url STRING NOT NULL,
-message_id INTEGER NOT NULL)"];
-    
-   
-}
-
-
-
+// }
 
 // object to handle db connections etc.
 pub struct DB {
@@ -56,32 +37,92 @@ pub struct DB {
 }
 
 impl DB {
-    pub fn new(connection_string: &str) -> DB {
-	DB {
-	    conn: Connection::open(&connection_string).expect("failed opening connection to sqlite db"),
-	    connection_string: String::from(connection_string),
-	    schema: Vec::new(),
-	}
+    pub fn new(connection_string: &str) -> Result<DB> {
+        let schema = [
+            // "CREATE TABLE if NOT EXISTS message (
+            // id INTEGER PRIMARY KEY,
+            // flags BLOB,
+            // content TEXT NOT NULL,
+            // timestamp INTEGER NOT NULL,
+            // subject STRING,
+            // display_recipient STRING,
+            // stream_id INTEGER,
+            // )",
+            "CREATE TABLE if NOT EXISTS link (
+id INTEGER PRIMARY KEY,
+url TEXT NOT NULL,
+domain STRING,
+stream_id INTEGER NOT NULL,
+relevance_score INTEGER,
+tags STRING,
+message_id INTEGER NOT NULL)",
+        ];
+        let mut db = DB {
+            conn: Connection::open(&connection_string)?,
+            connection_string: String::from(connection_string),
+            schema: Vec::new(),
+        };
+        for s in &schema {
+            db.add_schema(s.to_string())
+        }
+        Ok(db)
     }
 
     // this is sort of a workaround.  To keep the schema decoupled.
-    pub fn add_schema(&mut self, schema: &str) {
-	self.schema.push(schema.to_string());
+    pub fn add_schema(&mut self, schema: String) {
+        self.schema.push(schema);
     }
 
-    pub fn make_all_tables(&self, schema: Vec<&str>) -> Result<(), Box<dyn Error>> {
-	for t in schema {
-    	    self.conn.execute(t)?;
-	}
-	Ok(())
+    pub fn make_all_tables(&self) -> Result<()> {
+        for t in &self.schema {
+            println!("making schema {}", t);
+            self.conn.execute(t.as_str(), NO_PARAMS)?;
+        }
+        Ok(())
     }
 
-    pub fn insert(link: Link) -> Result<(), Box<dyn Error>> {
-	self.conn.execute(format!("INSERT INTO link (message_id, stream_id, relevance_score, tags, url) VALUES ({}, {}, {}, {}, {})", link.message_id, link.stream_id, link.relevance_score, link.tags, link.url))?;
-	Ok(())
+    pub fn insert_link(&mut self, link: &Link) -> Result<()> {
+        self.conn.execute(
+	    "INSERT INTO link (message_id, stream_id, relevance_score, tags, url, domain) VALUES (?1, ?2, ?3, ?4, 5?, 6?)",
+	    params![link.message_id, link.stream_id, link.relevance_score, link.tags.as_string().as_str(), link.url.as_str(), link.domain.as_str()])?;
+
+        Ok(())
     }
 
-}   
+    pub fn dump_linkbuffer(&mut self, lb: LinkBuffer) -> Result<()> {
+        println!("dumping linkbuffer");
+        for link in &lb {
+            self.insert_link(link)?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn test_db() {
+    let msgbuf = MessageBuffer::from_file("test.json").expect("trouble reading file to msgbuffer");
+    let linkbuf = LinkBuffer::from_msgbuffer(msgbuf);
+
+    let mut d = DB::new(":memory:").expect("could not connect to test db");
+
+    d.add_schema(
+        "CREATE TABLE if NOT EXISTS link (
+id INTEGER PRIMARY KEY,
+stream_id INTEGER NOT NULL,
+relevance_score INTEGER,
+tags BLOB,
+url STRING NOT NULL,
+message_id INTEGER NOT NULL)"
+            .to_string(),
+    );
+
+    d.make_all_tables().expect("could not create tables");
+
+    for link in &linkbuf {
+        d.insert_link(link);
+    }
+}
+
 // //     fn create_all(&self, schema: Schema) {
 // // 	db.execute(
 // // 	    "CREATE TABLE message (
@@ -95,7 +136,7 @@ impl DB {
 // // 	    params![],}
 // // 	).expect("casting object to sqlite table failed.");
 // //     fn insert_message(&self, msg: Message) -> Result<()> {
-	
+
 // //     }
 // }
 
@@ -114,8 +155,7 @@ impl DB {
 // 	for(key, value) in keys.as_object().unwrap().iter() {
 // 	    keystring.push(key.to_string());
 // 	};
-	
-	
+
 //     }
 // }
 
@@ -143,4 +183,3 @@ impl DB {
 // )",
 //     NO_PARAMS,
 // )?;
-

@@ -2,3 +2,10 @@
 *.json
 .env
 migrations/
+scraped_messages/
+*.swp
+log_sql_test
+notes_apollo_ml.txt
+test.db
+*.db
+*.json.p

@@ -1,12 +1,12 @@
 /*
 Link culler
 
-We want to work on message data, so that we're dealing with smaller data sets when we score / tag links. 
+We want to work on message data, so that we're dealing with smaller data sets when we score / tag links.
 
 Inputs:
 json of messages
 
-Mutators: 
+Mutators:
 Apply exclusion rules
 
 Outputs:
