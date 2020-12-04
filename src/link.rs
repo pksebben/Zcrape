@@ -92,6 +92,8 @@ pub struct Link {
 
 impl Link {
     pub fn from_message(msg: &Message, link: String) -> Link {
+	// let mut t = Tags::new();
+	// t.add_vec(msg.extract_tags());
         Link {
             url: link.to_string(),
             domain: extract_domain(link),
@@ -101,29 +103,52 @@ impl Link {
             message_id: msg.id as u32,
         }
     }
+
+    pub fn printme(&self) {
+	println!("url:\n{}
+domain:\n{}
+stream_id:\n{}
+relevance_score\n{}
+tags:\n{}
+message_id:\n{}",
+		 self.url,
+		 self.domain,
+		 self.stream_id,
+		 self.relevance_score,
+		 self.tags.as_string(),
+		 self.message_id,
+	)
+    }
 }
 
 fn extract_domain(link: String) -> String {
     let s: String;
-    if link[..6].contains("https") {
-        s = link.strip_prefix("https://").unwrap().to_string();
+    println!("{}", &link);
+    if link.len() < 5 {
+	String::from("empty url")
     } else {
-        s = link.strip_prefix("http://").unwrap().to_string();
-    }
-    let mut o: Vec<&str> = s.split(".").collect();
-    if o[0] == "www" {
-        o.remove(0);
-    }
-    if o.len() < 2 {
-        o[0].to_string()
-    } else {
-        if o[1].contains("/") {
-            let p: Vec<&str> = o[1].split("/").collect();
-            let q: String = p[0].to_string();
-            format!("{}.{}", o[0].to_string(), q)
-        } else {
-            format!("{}.{}", o[0].to_string(), o[1].to_string())
-        }
+	if link[..5].contains("https") {
+            s = link.strip_prefix("https://").unwrap().to_string();
+	} else if link[..5].contains("http") {
+            s = link.strip_prefix("http://").unwrap().to_string();
+	} else {
+	    s = String::from("faulty_url");
+	}
+	let mut o: Vec<&str> = s.split(".").collect();
+	if o[0] == "www" {
+            o.remove(0);
+	}
+	if o.len() < 2 {
+            o[0].to_string()
+	} else {
+            if o[1].contains("/") {
+		let p: Vec<&str> = o[1].split("/").collect();
+		let q: String = p[0].to_string();
+		format!("{}.{}", o[0].to_string(), q)
+            } else {
+		format!("{}.{}", o[0].to_string(), o[1].to_string())
+            }
+	}
     }
 }
 
@@ -131,11 +156,22 @@ fn extract_domain(link: String) -> String {
 pub type Tags = Vec<String>;
 
 pub trait TagBehavior {
+    // fn new() -> Tags;
+    // fn add_vec(&mut self, v: std::option::Option<Vec<String>>);
     fn as_string(&self) -> String;
     fn from_str(string: String) -> Tags;
 }
 
 impl TagBehavior for Tags {
+    // fn new() -> Tags {
+    // 	vec![" ".to_string()]
+    // }
+    // fn add_vec(&mut self, v: std::option::Option<Vec<String>>) {
+    // 	match v {
+    // 	    Some(mut thing) => self.append(&mut thing),
+    // 	    None => ()
+    // 	}
+    // }
     fn as_string(&self) -> String {
         self.join(",")
     }

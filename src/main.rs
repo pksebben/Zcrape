@@ -43,6 +43,7 @@ fn log(i: c_int, s:&str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe
    { 
     config_log(Some(log))?;
    }
@@ -59,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn execute_on_args(db: &mut DB) -> Result<(), Box<dyn std::error::Error>> {
     let pattern: Vec<String> = std::env::args().collect();
 
+    let mut dupescount : HashMap<String, u32> = HashMap::new();
     let mut complist = OpenOptions::new()
         .append(true)
         .create(true)
@@ -75,17 +77,22 @@ fn execute_on_args(db: &mut DB) -> Result<(), Box<dyn std::error::Error>> {
 
         // these are the rules we're going to remove elements by.
         let cull_rules: Vec<&str> = vec![
-            ".gif",
-            ".png",
             "gist.github.com",
             "twitter.com",
             "amazon.com",
             "recurse.com",
             "mailto:",
             "zulip.com",
-            ".jpg",
             "repl.it",
             "facebook.com",
+	    "recurse.zulipchat.com",
+	    "docs.google.com",
+	    "web.skype",
+	    "zoom.us",
+	    "zulip.recursechat",
+	    "zulipchat.com",
+	    "zulip-coffee-bot",
+	    "verizon.com",
         ];
 
         // these are culling rules that I'm not sure should be here
@@ -104,35 +111,11 @@ fn execute_on_args(db: &mut DB) -> Result<(), Box<dyn std::error::Error>> {
 
         let urllist = linkbuffer.url_list();
 
-        db.dump_linkbuffer(linkbuffer);
+        // db.dump_linkbuffer(linkbuffer);
 
         for link in &urllist {
-            // This was the old way.
-            //
-            // let mut a : usize = 1;
-            // let mut b : usize = 2;
-            // let mut tld : &str;
-            // let mut tlds : Vec<&str>;
-
             println!("{}", link);
             uniqueurls.push(extract_domain(link.to_string()));
-            println!("{}", extract_domain(link.to_string()));
-            // let s : Vec<&str> = link.split(".").collect();
-            // if s.len() <= 1 {
-            // 	a = 0;
-            // 	b = 0;
-            // } else if s.len() <= 2 {
-            // 	a = 0;
-            // 	b = 1;
-            // }
-            // let domain = &s[a];
-            // if s[b].contains("/") {
-            // 	tlds = s[b].split("/").collect();
-            // 	tld = tlds[0];
-            // } else {
-            // 	tld = s[b];
-            // }
-            // println!("split link: {} {}\n", domain, tld);
         }
 
         numlink = &numlink + urllist.len();
@@ -142,17 +125,33 @@ fn execute_on_args(db: &mut DB) -> Result<(), Box<dyn std::error::Error>> {
 
         // println!("wrote: {}", file);
     }
+    for url in &uniqueurls {
+	
+    }
 
     uniqueurls.sort();
-    uniqueurls.dedup();
+    uniqueurls.dedup_by(|a, b| compare_dedup_log(&mut dupescount, a.to_string(), b.to_string()));
 
     for url in &uniqueurls {
         println!("{}", url);
     }
+    
     println!("found {} unique domains", uniqueurls.len());
+
+    println!("Unique Url counts: \n{:?}", dupescount);
 
     println!("out of {} total links", numlink);
     Ok(())
+}
+
+fn compare_dedup_log<T: std::cmp::PartialEq + std::cmp::Eq + std::hash::Hash>(dict: &mut HashMap<T, u32>,a: T, b: T) -> bool {
+    if a == b {
+	let p = dict.entry(a).or_insert(1);
+	*p += 1;
+	true
+    } else {
+	false
+    }
 }
 
 fn extract_domain(link: String) -> String {
@@ -366,7 +365,6 @@ fn cull_msgbuf(m: &mut MessageBuffer) {
 }
 
 // This is the grabbag of junk to probe the pipeline.  Tweak at will.
-fn test_message_pipeline() {}
 
 /*
 TODO:

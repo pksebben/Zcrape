@@ -82,8 +82,9 @@ message_id INTEGER NOT NULL)",
     }
 
     pub fn insert_link(&mut self, link: &Link) -> Result<()> {
+	link.printme();
         self.conn.execute(
-	    "INSERT INTO link (message_id, stream_id, relevance_score, tags, url, domain) VALUES (?1, ?2, ?3, ?4, 5?, 6?)",
+	    "INSERT INTO link (message_id, stream_id, relevance_score, tags, url, domain) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
 	    params![link.message_id, link.stream_id, link.relevance_score, link.tags.as_string().as_str(), link.url.as_str(), link.domain.as_str()])?;
 
         Ok(())

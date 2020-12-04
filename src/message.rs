@@ -220,7 +220,11 @@ impl Message {
         for react in &self.reactions {
             tags.push(react.emoji_name.to_string());
         }
-        tags
+	tags
+	// match tags.len() {
+	//     0 => None,
+	//     _ => Some(tags)
+	// }
     }
 }
 
