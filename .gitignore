@@ -9,3 +9,4 @@ notes_apollo_ml.txt
 test.db
 *.db
 *.json.p
+zapi.conf
