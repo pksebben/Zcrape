@@ -83,6 +83,7 @@ impl PrintAll for LinkBuffer {
 // This is the format we eventually want Links to live in.
 pub struct Link {
     pub url: String,
+    pub timestamp: u32,
     pub domain: String,
     pub stream_id: u32,
     pub relevance_score: u32, // how are we going to calculate this?
@@ -97,6 +98,7 @@ impl Link {
         Link {
             url: link.to_string(),
             domain: extract_domain(link),
+	    timestamp: msg.timestamp as u32,
             stream_id: msg.stream_id as u32,
             relevance_score: msg.calculate_score(), // how are we going to calculate this?
             tags: msg.extract_tags(),
@@ -110,13 +112,15 @@ domain:\n{}
 stream_id:\n{}
 relevance_score\n{}
 tags:\n{}
-message_id:\n{}",
+message_id:\n{}
+timestamp:\n{}",
 		 self.url,
 		 self.domain,
 		 self.stream_id,
 		 self.relevance_score,
 		 self.tags.as_string(),
 		 self.message_id,
+		 self.timestamp,
 	)
     }
 }

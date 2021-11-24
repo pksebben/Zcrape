@@ -1,3 +1,9 @@
+/*
+This functionality (but not code, necessarily) is duplicated in status_check.rs
+
+The two should be merged, but it may be necessary to multithread this first (as this promises to be incredibly time intensive.)
+*/
+
 use futures::executor::block_on;
 use reqwest;
 use std::time::Duration;
